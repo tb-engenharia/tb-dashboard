@@ -151,6 +151,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 .cmpblk{background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:12px 16px;margin-bottom:4px;display:none;}
 .cmpblk.on{display:block;}
 .cmp-title{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-bottom:10px;}
+.warnbox{background:var(--adim);border:1px solid var(--amber);border-radius:10px;padding:11px 15px;margin-bottom:4px;display:flex;gap:11px;align-items:flex-start;}
+.warnbox .wb-ic{color:var(--amber);font-size:15px;line-height:1.25;}
+.warnbox .wb-t{font-size:11.5px;font-weight:700;color:var(--amber);margin-bottom:3px;}
+.warnbox .wb-d{font-size:11px;color:var(--text2);line-height:1.55;}
+.warnbox .wb-d b{color:var(--text);}
 .cmp-g{display:flex;gap:16px;flex-wrap:wrap;}
 .cmp-i{display:flex;align-items:center;gap:10px;background:var(--bg4);border-radius:7px;padding:8px 12px;flex:1;min-width:160px;}
 .cmp-l{font-size:11px;color:var(--text2);flex:1;}
@@ -294,10 +299,20 @@ const BADGE = {
   'processada pelo forn...': '<span class="badge bp">Processada</span>',
   'pendente de reenvio': '<span class="badge bx">Pend. reenvio</span>',
 };
+const BADGE_CLASSE = {
+  gerada:     '<span class="badge bg">Gerada</span>',
+  enviada:    '<span class="badge bt">Env. forn.</span>',
+  processada: '<span class="badge bp">Processada</span>',
+  recebida:   '<span class="badge br">Recebida ✓</span>',
+  cancelada:  '<span class="badge bx">Cancelada</span>',
+  pendente:   '<span class="badge bx">Pend. reenvio</span>',
+};
 function badgeFor(s) {
   if (!s) return '';
-  const k = s.toLowerCase().trim();
-  return BADGE[k] || `<span class="badge ba">${s}</span>`;
+  const k = normSit(s);
+  if (BADGE[k]) return BADGE[k];
+  // variacoes truncadas pela planilha ("Processado pelo forn...", "Enviada aos forneced...")
+  return BADGE_CLASSE[classOC(s)] || `<span class="badge ba">${s}</span>`;
 }
 
 const CORES = ['#4a9eff','#2dd9c8','#f5a623','#a78bfa','#2dd98f','#ff5e5e','#f97316','#e879f9','#fb923c','#34d399'];
@@ -359,6 +374,52 @@ function toNum(s) {
   return parseFloat(str) || 0;
 }
 
+// ── Normalização de situações ────────────────────────
+// A planilha grava a mesma situação de várias formas ("Processada pelo fornecedor",
+// "Processada pelo forn...", "Processado pelo forn."). normSit tira acento/caixa/espaço
+// e os class* reduzem cada linha a UM estado — assim a soma dos estados fecha com o total.
+function normSit(s) {
+  return String(s == null ? '' : s).toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+// Chave de cruzamento entre abas: nº de OC/cotação chega ora como texto, ora como número.
+function chave(v) {
+  return String(v == null ? '' : v).trim().replace(/\.0+$/, '');
+}
+function classOC(sit) {
+  const s = normSit(sit);
+  if (!s) return 'outros';
+  if (s.includes('receb'))   return 'recebida';    // Recebida, Parcialmente recebida
+  if (s.includes('process')) return 'processada';  // Processada/Processado pelo forn...
+  if (s.includes('envi'))    return 'enviada';     // Enviada, Enviada ao fornecedor
+  if (s.includes('gerada'))  return 'gerada';
+  if (s.includes('cancel'))  return 'cancelada';
+  if (s.includes('reenvio') || s.includes('pendente')) return 'pendente';
+  return 'outros';
+}
+function classCot(sit) {
+  const s = normSit(sit);
+  if (!s) return 'outros';
+  if (s.includes('ordem de compra')) return 'convertida'; // inclui "Ordem de compra parcial"
+  if (s.includes('cancel'))     return 'cancelada';
+  if (s.includes('parcial'))    return 'parcial';         // Respondida parcialmente
+  if (s.includes('respondida')) return 'respondida';
+  if (s.includes('envi'))       return 'enviada';
+  if (s.includes('nova') || s.includes('aberta')) return 'aberta';
+  if (s.includes('reenvio') || s.includes('pendente')) return 'pendente';
+  return 'outros';
+}
+function classSol(sit) {
+  const s = normSit(sit);
+  if (!s) return 'outros';
+  if (s.includes('cotada')) return 'cotada';
+  if (s.includes('ordem') || s.includes('contrato')) return 'concluida';
+  if (s.includes('parcial')) return 'parcial';
+  if (s.includes('aberta'))  return 'aberta';
+  return 'outros';
+}
+
 // Agrupa rows em semanas e monta o array SEMANAS
 function processarDados(compras, cotacoes, solicitacoes, descontos) {
   // Detecta semanas únicas a partir das compras
@@ -391,16 +452,24 @@ function processarDados(compras, cotacoes, solicitacoes, descontos) {
 
     const totalOCs = ocs.reduce((a,r) => a + toNum(r.valor), 0);
 
-    // Situações de OC
-    const sit = (s='') => s.toLowerCase().trim();
-    const ordensGeradas     = ocs.filter(r => sit(r.situacao).includes('gerada')).length;
-    const ordensProcessadas = ocs.filter(r => sit(r.situacao).includes('processada')).length;
-    const ordensRecebidas   = ocs.filter(r => sit(r.situacao).includes('recebida')).length;
+    // Situações de OC — cada OC cai em exatamente um estado, então os contadores fecham com o total
+    const sit = normSit;
+    const nOC = e => ocs.filter(r => classOC(r.situacao) === e).length;
+    const ordensGeradas     = nOC('gerada');
+    const ordensProcessadas = nOC('processada');
+    const ordensRecebidas   = nOC('recebida');
+    const ordensEnviadas    = nOC('enviada');
+    const ordensOutras      = ocs.length - ordensGeradas - ordensProcessadas - ordensRecebidas - ordensEnviadas;
 
-    // Situações de cotação
-    const cotResp   = cots.filter(r => sit(r.situacao).includes('respondida') && !sit(r.situacao).includes('parcial')).length;
-    const cotParcial= cots.filter(r => sit(r.situacao).includes('parcial')).length;
-    const cotAberta = cots.filter(r => sit(r.situacao).includes('aberta') || sit(r.situacao).includes('nova') || sit(r.situacao).includes('enviada')).length;
+    // Situações de cotação — idem. "Ordem de compra gerada" é o estado final (virou OC),
+    // antes contado como "outros" e invisível nos KPIs.
+    const nCot = e => cots.filter(r => classCot(r.situacao) === e).length;
+    const cotResp       = nCot('respondida');
+    const cotParcial    = nCot('parcial');
+    const cotAberta     = nCot('aberta');
+    const cotEnviada    = nCot('enviada');
+    const cotConvertida = nCot('convertida');
+    const cotOutras     = cots.length - cotResp - cotParcial - cotAberta - cotEnviada - cotConvertida;
 
     // Obras únicas nas OCs
     const obraMap = {};
@@ -422,27 +491,29 @@ function processarDados(compras, cotacoes, solicitacoes, descontos) {
 
     // Cotações por obra e status
     const obrasUnicas = [...new Set(cots.map(c=>c.obra).filter(Boolean))];
-    const isResp  = c => sit(c.situacao).includes('respondida') && !sit(c.situacao).includes('parcial');
-    const isParcial = c => sit(c.situacao).includes('parcial');
-    const isEnviada = c => sit(c.situacao).includes('enviada') || sit(c.situacao).includes('nova');
-    const isAberta  = c => sit(c.situacao).includes('aberta');
+    const porObra = e => obrasUnicas.map(o => cots.filter(c => c.obra===o && classCot(c.situacao)===e).length);
+    const RESTO_COT = ['cancelada','pendente','outros'];
     const cotStatus = {
       labels:     obrasUnicas,
-      respondida: obrasUnicas.map(o => cots.filter(c=>c.obra===o && isResp(c)).length),
-      parcial:    obrasUnicas.map(o => cots.filter(c=>c.obra===o && isParcial(c)).length),
-      enviada:    obrasUnicas.map(o => cots.filter(c=>c.obra===o && isEnviada(c)).length),
-      aberta:     obrasUnicas.map(o => cots.filter(c=>c.obra===o && isAberta(c)).length),
-      outros:     obrasUnicas.map(o => cots.filter(c=>c.obra===o && !isResp(c) && !isParcial(c) && !isEnviada(c) && !isAberta(c)).length),
+      convertida: porObra('convertida'),
+      respondida: porObra('respondida'),
+      parcial:    porObra('parcial'),
+      enviada:    porObra('enviada'),
+      aberta:     porObra('aberta'),
+      outros:     obrasUnicas.map(o => cots.filter(c => c.obra===o && RESTO_COT.includes(classCot(c.situacao))).length),
     };
 
     // Pendências (solicitações não finalizadas)
+    // Pendência = solicitação que ainda não andou ("Aberta" ou "Parcial").
+    // "Cotada" já seguiu o fluxo — antes caía aqui e inflava a lista com TODAS as solicitações.
     const pendencias = sols
-      .filter(r => !sit(r.situacao).includes('ordem') && !sit(r.situacao).includes('contrato'))
-      .map(r => ({ num: r.num_sol||r.numero, desc: r.descricao, obra: r.obra, sit: sit(r.situacao).includes('parcial')?'parcial':'aberta' }));
+      .filter(r => ['aberta','parcial'].includes(classSol(r.situacao)))
+      .map(r => ({ num: r.num_sol||r.numero, desc: r.descricao, obra: r.obra, sit: classSol(r.situacao) }));
+    const ultimaSol = sols.length ? (sols[sols.length-1].num_sol || sols[sols.length-1].numero || '—') : '—';
 
     // Descontos
     const descontosMapped = descs.map(d => ({
-      cotacao:    d.cotacao,
+      cotacao:    chave(d.cotacao),
       obra:       d.obra,
       item:       d.item,
       fornVenc:   d.forn_venc,
@@ -464,10 +535,17 @@ function processarDados(compras, cotacoes, solicitacoes, descontos) {
       cotacoesRespondidas: cotResp,
       cotacoesParciais:    cotParcial,
       cotacoesAbertas:     cotAberta,
+      cotacoesEnviadas:    cotEnviada,
+      cotacoesConvertidas: cotConvertida,
+      cotacoesOutras:      cotOutras,
+      cotNums:             cots.map(c => chave(c.num_cot)).filter(Boolean),
+      ultimaSol,
       ordens:              ocs.length,
       ordensGeradas,
       ordensProcessadas,
       ordensRecebidas,
+      ordensEnviadas,
+      ordensOutras,
       mediaFornPorCot: cots.length > 0
         ? +(cots.reduce((a,r) => a + (parseInt(r.fornecedores)||0), 0) / cots.length).toFixed(1)
         : 0,
@@ -476,7 +554,7 @@ function processarDados(compras, cotacoes, solicitacoes, descontos) {
       descontos: descontosMapped,
       ocs: ocs.map(o => ({
         num:  o.num_oc||o.numero,
-        cot:  o.cotacao||'—',
+        cot:  chave(o.cotacao) || '—',
         obra: o.obra,
         forn: o.fornecedor,
         data: o.data,
@@ -602,11 +680,29 @@ function renderSemana(idx) {
   const descAbs = bruto - venc;
   const descPctV = bruto>0 ? descAbs/bruto*100 : 0;
   const mediaOC = s.ordens>0 ? s.totalOCs/s.ordens : 0;
-  // % compras negociadas: OCs cujo num_oc aparece em alguma cotação com desconto mapeado
-  const cotsComDesconto = new Set(des.filter(d=>d.maiorPreco>d.precoVenc).map(d=>d.cotacao));
+  // % compras negociadas: OCs cuja cotação aparece no mapa de descontos da semana.
+  // Só faz sentido se a coluna "cotacao" da aba Compras apontar para um nº de cotação real —
+  // por isso o vínculo é medido antes, e um KPI sem lastro é suspenso em vez de exibir 0%.
+  const cotsComDesconto = new Set(des.filter(d=>d.maiorPreco>d.precoVenc).map(d=>chave(d.cotacao)));
   const ocs = [...(s.ocs||[])].sort((a,b)=>b.valor-a.valor);
-  const ocsNegociadas = ocs.filter(o=>o.cot && cotsComDesconto.has(o.cot)).length;
+  const ocsNegociadas = ocs.filter(o=>o.cot && cotsComDesconto.has(chave(o.cot))).length;
   const pctNegociadas = s.ordens>0 ? ocsNegociadas/s.ordens*100 : 0;
+
+  // ── Guard do vínculo OC ↔ cotação ──
+  // Números de cotação reconhecidos na semana: os da aba Cotações + os do mapa de descontos.
+  const cotsConhecidas  = new Set([...(s.cotNums||[]), ...des.map(d=>chave(d.cotacao))].filter(Boolean));
+  const ocsSemVinculo   = ocs.filter(o => !o.cot || o.cot==='—' || !cotsConhecidas.has(chave(o.cot)));
+  const vinculoQuebrado = s.ordens>0 && cotsConhecidas.size>0 && ocsSemVinculo.length/s.ordens >= 0.5;
+  const exemplosVinculo = ocsSemVinculo.slice(0,3).map(o=>'OC '+(o.num||'?')+' → cot. '+(o.cot||'vazio')).join(', ');
+  const warnHTML = vinculoQuebrado ? `<div class="warnbox">
+      <div class="wb-ic">⚠</div>
+      <div>
+        <div class="wb-t">Vínculo OC ↔ cotação inconsistente nesta semana</div>
+        <div class="wb-d"><b>${ocsSemVinculo.length} de ${s.ordens} OCs</b> trazem na coluna <b>cotacao</b> um número que não existe na aba Cotações (${exemplosVinculo}).
+        O KPI <b>% compras negociadas</b> cruza exatamente essas duas colunas, então foi suspenso — exibi-lo como 0% sugeriria que nada foi negociado, o que não é o caso.
+        Confira a aba <b>Compras</b> da semana ${s.label} na planilha.</div>
+      </div>
+    </div>` : '';
 
   // Comparação semana anterior
   let cmpHTML = '';
@@ -663,16 +759,17 @@ function renderSemana(idx) {
 
   document.getElementById('appContent').innerHTML = `
   <div class="page">
+    ${warnHTML}
     ${cmpHTML}
     <div class="sec">Indicadores do período</div>
     <div class="kg">
-      <div class="kc cb"><div class="ki">◎</div><div class="kl">Solicitações</div><div class="kv">${s.solicitacoes}</div><div class="ksub">última: ${(s.pendencias||[])[0]?.num||'—'}</div></div>
-      <div class="kc ca"><div class="ki">◈</div><div class="kl">Cotações</div><div class="kv">${s.cotacoes}</div><div class="ksub">${s.cotacoesRespondidas} resp. · ${s.cotacoesParciais} parc. · ${s.cotacoesAbertas} ab.</div></div>
-      <div class="kc cp"><div class="ki">◆</div><div class="kl">OCs emitidas</div><div class="kv">${s.ordens}</div><div class="ksub">${s.ordensRecebidas} recebidas · ${s.ordensProcessadas} processadas</div></div>
+      <div class="kc cb"><div class="ki">◎</div><div class="kl">Solicitações</div><div class="kv">${s.solicitacoes}</div><div class="ksub">${(s.pendencias||[]).length} em aberto · última: ${s.ultimaSol||'—'}</div></div>
+      <div class="kc ca"><div class="ki">◈</div><div class="kl">Cotações</div><div class="kv">${s.cotacoes}</div><div class="ksub">${s.cotacoesConvertidas} → OC · ${s.cotacoesRespondidas} resp. · ${s.cotacoesParciais} parc. · ${s.cotacoesAbertas} ab.</div></div>
+      <div class="kc cp"><div class="ki">◆</div><div class="kl">OCs emitidas</div><div class="kv">${s.ordens}</div><div class="ksub">${s.ordensRecebidas} receb. · ${s.ordensProcessadas} proc. · ${s.ordensEnviadas} env. · ${s.ordensGeradas} ger.</div></div>
       <div class="kc ck"><div class="ki">◉</div><div class="kl">Total comprado</div><div class="kv" style="font-size:16px;">${brlK(s.totalOCs)}</div><div class="ksub">soma das OCs</div></div>
       <div class="kc cg"><div class="ki">▲</div><div class="kl">Desconto obtido</div><div class="kv" style="font-size:${des.length?'16px':'22px'};">${des.length?brlK(descAbs):'—'}</div><div class="ksub">${des.length?descPctV.toLocaleString('pt-BR',{minimumFractionDigits:1})+'% s/ cotações mapeadas':'sem mapa de cotação'}</div></div>
       <div class="kc cr"><div class="ki">◑</div><div class="kl">Ticket médio / OC</div><div class="kv" style="font-size:16px;">${brlK(mediaOC)}</div><div class="ksub">Mediana: ${brlK(s.mediana||0)}</div></div>
-      <div class="kc cg"><div class="ki">%</div><div class="kl">Compras negociadas</div><div class="kv">${pctNegociadas.toLocaleString('pt-BR',{maximumFractionDigits:0})}%</div><div class="ksub">${ocsNegociadas} de ${s.ordens} OCs com desconto mapeado</div></div>
+      <div class="kc ${vinculoQuebrado?'ca':'cg'}"><div class="ki">%</div><div class="kl">Compras negociadas</div><div class="kv">${vinculoQuebrado?'—':pctNegociadas.toLocaleString('pt-BR',{maximumFractionDigits:0})+'%'}</div><div class="ksub">${vinculoQuebrado?'vínculo OC ↔ cotação inconsistente':ocsNegociadas+' de '+s.ordens+' OCs com desconto mapeado'}</div></div>
     </div>
 
     <div class="sec">Funil operacional · volume por obra</div>
@@ -799,9 +896,10 @@ function renderSemana(idx) {
   ].map(r=>`<div class="sr"><div class="sk">${r.k}</div><div class="sv ${r.c}">${r.v}</div></div>`).join('');
 
   // Stacked cot
-  const cp = s.cotPorObra||{labels:[],respondida:[],parcial:[],enviada:[],aberta:[]};
+  const cp = s.cotPorObra||{labels:[],convertida:[],respondida:[],parcial:[],enviada:[],aberta:[]};
   charts.cot = new Chart(document.getElementById('chCot').getContext('2d'),{
     type:'bar', data:{labels:cp.labels,datasets:[
+      {label:'Virou OC',   data:cp.convertida||[], backgroundColor:'#a78bfa',borderRadius:3},
       {label:'Respondida', data:cp.respondida, backgroundColor:'#2dd98f',borderRadius:3},
       {label:'Parcial',    data:cp.parcial,    backgroundColor:'#4a9eff',borderRadius:3},
       {label:'Enviada',    data:cp.enviada,    backgroundColor:'#f5a623',borderRadius:3},
@@ -819,14 +917,14 @@ function renderSemana(idx) {
   // OC status donut
   document.getElementById('ocTotN').textContent = s.ordens;
   charts.oc = new Chart(document.getElementById('chOC').getContext('2d'),{
-    type:'doughnut', data:{labels:['Gerada','Processada','Recebida','Outros'],
-      datasets:[{data:[s.ordensGeradas,s.ordensProcessadas,s.ordensRecebidas,Math.max(s.ordens-s.ordensGeradas-s.ordensProcessadas-s.ordensRecebidas,0)],
-        backgroundColor:['#4a9eff','#a78bfa','#2dd98f','#f5a623'],borderColor:'transparent',borderWidth:2,borderRadius:6}]},
+    type:'doughnut', data:{labels:['Gerada','Env. fornecedor','Processada','Recebida','Outros'],
+      datasets:[{data:[s.ordensGeradas,s.ordensEnviadas,s.ordensProcessadas,s.ordensRecebidas,Math.max(s.ordensOutras||0,0)],
+        backgroundColor:['#4a9eff','#f5a623','#a78bfa','#2dd98f','#5a6370'],borderColor:'transparent',borderWidth:2,borderRadius:6}]},
     options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{display:false}}}
   });
   document.getElementById('rgrid').innerHTML=[
     {v:s.ordensGeradas,l:'Geradas',c:'var(--blue)'},{v:s.ordensProcessadas,l:'Processadas',c:'var(--purple)'},
-    {v:s.ordensRecebidas,l:'Recebidas',c:'var(--green)'},{v:s.cotacoesAbertas,l:'Cot. abertas',c:'var(--amber)'},
+    {v:s.ordensRecebidas,l:'Recebidas',c:'var(--green)'},{v:s.ordensEnviadas,l:'Env. forn.',c:'var(--amber)'},
   ].map(r=>`<div class="ri"><div class="rv" style="color:${r.c}">${r.v}</div><div class="rl">${r.l}</div></div>`).join('');
 
   // OC tabela
